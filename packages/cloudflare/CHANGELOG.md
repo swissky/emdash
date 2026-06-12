@@ -1,5 +1,12 @@
 # @emdash-cms/cloudflare
 
+## 0.18.1
+
+### Patch Changes
+
+- Updated dependencies []:
+  - emdash@0.18.1
+
 ## 0.18.0
 
 ### Minor Changes

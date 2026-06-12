@@ -1,5 +1,13 @@
 # @emdash-cms/fixture-perf-site
 
+## 0.0.18
+
+### Patch Changes
+
+- Updated dependencies []:
+  - emdash@0.18.1
+  - @emdash-cms/cloudflare@0.18.1
+
 ## 0.0.17
 
 ### Patch Changes

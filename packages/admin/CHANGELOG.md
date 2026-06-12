@@ -1,5 +1,19 @@
 # @emdash-cms/admin
 
+## 0.18.1
+
+### Patch Changes
+
+- [#1417](https://github.com/emdash-cms/emdash/pull/1417) [`7e70abc`](https://github.com/emdash-cms/emdash/commit/7e70abcc1434dc2fd94c1f51c8c8c76acc9aa536) Thanks [@emdashbot](https://github.com/apps/emdashbot)! - Fix taxonomy term edit dialog overflow with many locales ([#1269](https://github.com/emdash-cms/emdash/issues/1269))
+
+  Adds `max-h-[85vh] flex flex-col` to the `TermFormDialog` and makes its body
+  scrollable with `flex-1 overflow-y-auto`, keeping the header and footer pinned.
+  This prevents the Cancel/Update buttons from falling off-screen when the
+  Translations panel lists a large number of locales.
+
+- Updated dependencies []:
+  - @emdash-cms/blocks@0.18.1
+
 ## 0.18.0
 
 ### Patch Changes
