@@ -1684,7 +1684,7 @@ export class EmDashRuntime {
 		// The email pipeline orchestrates beforeSend → deliver → afterSend.
 		// The dev console provider was registered above and will be auto-selected
 		// by resolveExclusiveHooks if it's the sole email:deliver provider.
-		const emailPipeline = new EmailPipeline(pipeline);
+		const emailPipeline = new EmailPipeline(pipeline, db);
 
 		// Wire email send into sandbox runner (created earlier but without
 		// email pipeline since it didn't exist yet)
@@ -3078,6 +3078,19 @@ export class EmDashRuntime {
 
 			// Normalize media fields (fill dimensions, storageKey, etc.)
 			processedData = await this.normalizeMediaFields(collection, processedData);
+
+			// Request data and hook output are untrusted at this boundary. Internal
+			// revision metadata is inherited only from existing trusted revisions.
+			const reservedKey = Object.keys(processedData).find((key) => key.startsWith("_"));
+			if (reservedKey) {
+				return {
+					success: false as const,
+					error: {
+						code: "VALIDATION_ERROR",
+						message: `Reserved content field is not allowed: ${reservedKey}`,
+					},
+				};
+			}
 
 			// Validate field-level shape BEFORE the draft-revision write so
 			// invalid updates can't silently land in revision history.

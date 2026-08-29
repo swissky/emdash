@@ -16,6 +16,7 @@ export interface Revision {
 }
 
 export interface CreateRevisionInput {
+	id?: string;
 	collection: string;
 	entryId: string;
 	data: Record<string, unknown>;
@@ -35,7 +36,7 @@ export class RevisionRepository {
 	 * Create a new revision
 	 */
 	async create(input: CreateRevisionInput): Promise<Revision> {
-		const id = monotonic();
+		const id = input.id ?? monotonic();
 
 		const row: Omit<RevisionTable, "created_at"> = {
 			id,
@@ -143,6 +144,12 @@ export class RevisionRepository {
 		return Number(result?.count || 0);
 	}
 
+	/** Delete one revision, used to compensate failed non-transactional writes. */
+	async deleteById(id: string): Promise<boolean> {
+		const result = await this.db.deleteFrom("revisions").where("id", "=", id).executeTakeFirst();
+		return Number(result.numDeletedRows ?? 0) === 1;
+	}
+
 	/**
 	 * Delete all revisions for an entry (use when entry is deleted)
 	 */
@@ -214,6 +221,50 @@ export class RevisionRepository {
 		`.execute(this.db);
 
 		return Number(result.numAffectedRows ?? 0);
+	}
+
+	/** Delete old committed ledger rows while preserving the current and latest operations. */
+	async prunePluginContentOperations(
+		pluginId: string,
+		collection: string,
+		entryId: string,
+		currentRevisionId: string,
+		before: string,
+		keepCount: number,
+	): Promise<number> {
+		const keep = await this.db
+			.selectFrom("plugin_content_operations")
+			.select("revision_id")
+			.where("plugin_id", "=", pluginId)
+			.where("collection", "=", collection)
+			.where("entry_id", "=", entryId)
+			.where("status", "in", ["committed", "failed"])
+			.orderBy("created_at", "desc")
+			.limit(keepCount)
+			.execute();
+		const keepIds = new Set([currentRevisionId, ...keep.map((row) => row.revision_id)]);
+		const candidates = await this.db
+			.selectFrom("plugin_content_operations")
+			.select(["revision_id", "created_at"])
+			.where("plugin_id", "=", pluginId)
+			.where("collection", "=", collection)
+			.where("entry_id", "=", entryId)
+			.where("status", "in", ["committed", "failed"])
+			.execute();
+		const cutoff = Date.parse(before);
+		const deleteIds = candidates
+			.filter((row) => Date.parse(`${row.created_at.replace(" ", "T")}Z`) < cutoff)
+			.map((row) => row.revision_id)
+			.filter((id) => !keepIds.has(id));
+		if (deleteIds.length === 0) return 0;
+		const result = await this.db
+			.deleteFrom("plugin_content_operations")
+			.where("plugin_id", "=", pluginId)
+			.where("collection", "=", collection)
+			.where("entry_id", "=", entryId)
+			.where("revision_id", "in", deleteIds)
+			.executeTakeFirst();
+		return Number(result.numDeletedRows ?? 0);
 	}
 
 	async pruneQueuedEntry(

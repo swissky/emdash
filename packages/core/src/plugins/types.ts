@@ -177,6 +177,7 @@ export type PluginStorage<T extends PluginStorageConfig> = {
 export interface KVAccess {
 	get<T>(key: string): Promise<T | null>;
 	set(key: string, value: unknown): Promise<void>;
+	setIfAbsent(key: string, value: unknown): Promise<boolean>;
 	delete(key: string): Promise<boolean>;
 	list(prefix?: string): Promise<Array<{ key: string; value: unknown }>>;
 }
@@ -219,6 +220,8 @@ export interface ContentItem {
 	status: string;
 	locale: string | null;
 	data: Record<string, unknown>;
+	/** Opaque token for optimistic draft concurrency; draft data is not included. */
+	draftRevisionId: string | null;
 	/**
 	 * SEO metadata, populated when the collection has SEO enabled
 	 * (`has_seo = 1`). `undefined` for non-SEO collections.
@@ -322,6 +325,12 @@ export interface ContentAccess {
 		options?: ContentCreateOptions,
 	): Promise<ContentItem>;
 	update?(collection: string, id: string, data: ContentWriteInput): Promise<ContentItem>;
+	createDraftRevision?(
+		collection: string,
+		id: string,
+		data: ContentWriteInput,
+		options?: CreateDraftRevisionOptions,
+	): Promise<CreateDraftRevisionResult>;
 	delete?(collection: string, id: string): Promise<boolean>;
 }
 
@@ -342,6 +351,24 @@ export interface TaxonomyAccess {
 	): Promise<TaxonomyTermInfo[]>;
 }
 
+/** Optimistic-concurrency options for draft revision writes. */
+export interface CreateDraftRevisionOptions {
+	/** The draft revision observed by the caller. `null` means no draft exists. */
+	expectedDraftRevisionId?: string | null;
+	/** Stable idempotency key for safely replaying a write after a lost response. */
+	operationId?: string;
+}
+
+/** Effective draft item and token to pass to the next draft write. */
+export interface CreateDraftRevisionResult {
+	item: ContentItem;
+	/** Current content-row token for the next optimistic write. */
+	draftRevisionId: string | null;
+	/** Immutable revision reserved for this idempotent operation. */
+	operationRevisionId: string;
+	alreadyApplied: boolean;
+}
+
 /**
  * Full content access with write operations
  */
@@ -352,6 +379,17 @@ export interface ContentAccessWithWrite extends ContentAccess {
 		options?: ContentCreateOptions,
 	): Promise<ContentItem>;
 	update(collection: string, id: string, data: ContentWriteInput): Promise<ContentItem>;
+	/**
+	 * Create a draft snapshot without changing the live content row.
+	 * Pass the previous result's token to reject concurrent editor writes.
+	 * Without a token, one CAS conflict is re-read, re-merged, and retried.
+	 */
+	createDraftRevision(
+		collection: string,
+		id: string,
+		data: ContentWriteInput,
+		options?: CreateDraftRevisionOptions,
+	): Promise<CreateDraftRevisionResult>;
 	delete(collection: string, id: string): Promise<boolean>;
 }
 
@@ -602,6 +640,8 @@ export interface EmailMessage {
 	subject: string;
 	text: string;
 	html?: string;
+	/** Durable at-most-once attempt key, scoped to the sending source. */
+	idempotencyKey?: string;
 }
 
 /**

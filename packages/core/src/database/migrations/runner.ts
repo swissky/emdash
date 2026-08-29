@@ -73,7 +73,8 @@ import * as m067 from "./067_indexed_content_fields.js";
 import * as m068 from "./068_content_taxonomy_entry_groups.js";
 import * as m069 from "./069_collection_title_date_fields.js";
 import * as m070 from "./070_collection_routable.js";
-
+import * as m071 from "./071_plugin_content_operations.js";
+import * as m072 from "./072_plugin_email_operations.js";
 const MIGRATIONS: Readonly<Record<string, Migration>> = Object.freeze({
 	"001_initial": m001,
 	"002_media_status": m002,
@@ -127,6 +128,7 @@ const MIGRATIONS: Readonly<Record<string, Migration>> = Object.freeze({
 	"051_content_taxonomies_denorm": m051,
 	"052_media_usage_read_index": m052,
 	"053_plugin_mcp_tools": m053,
+
 	"054_media_upload_attempts": m054,
 	"055_content_translation_group_locale_index": m055,
 	"056_taxonomy_term_sort_order": m056,
@@ -144,6 +146,8 @@ const MIGRATIONS: Readonly<Record<string, Migration>> = Object.freeze({
 	"068_content_taxonomy_entry_groups": m068,
 	"069_collection_title_date_fields": m069,
 	"070_collection_routable": m070,
+	"071_plugin_content_operations": m071,
+	"072_plugin_email_operations": m072,
 });
 
 /** Ordered names from the statically registered migration set. */

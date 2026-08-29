@@ -23,6 +23,12 @@ import type { Kysely, Transaction } from "kysely";
  * The result is cached for the lifetime of the process/worker.
  */
 let transactionsSupported: boolean | null = null;
+
+/** Override transaction detection in integration tests. */
+export function __setTransactionsSupportedForTests(value: boolean | null): void {
+	transactionsSupported = value;
+}
+
 const TRANSACTIONS_NOT_SUPPORTED_RE = /transactions are not supported/i;
 
 export async function withTransaction<DB, T>(

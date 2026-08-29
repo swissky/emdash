@@ -1117,7 +1117,14 @@ export class ContentRepository {
 		`.execute(this.db);
 
 		const changed = (result.numAffectedRows ?? 0n) > 0n;
-		if (changed) invalidateCollectionCache(type);
+		if (changed) {
+			await this.db
+				.deleteFrom("plugin_content_operations")
+				.where("collection", "=", type)
+				.where("entry_id", "=", id)
+				.execute();
+			invalidateCollectionCache(type);
+		}
 		return changed;
 	}
 

@@ -4,6 +4,29 @@ import type { Generated } from "kysely";
 // Note: Content tables (ec_posts, ec_pages, etc.) are created dynamically
 // by the SchemaRegistry. They are not defined in this type file.
 
+export interface PluginEmailOperationTable {
+	source: string;
+	idempotency_key: string;
+	message_hash: string;
+	status: string;
+	created_at: Generated<string>;
+	updated_at: Generated<string>;
+}
+
+export interface PluginContentOperationTable {
+	plugin_id: string;
+	collection: string;
+	entry_id: string;
+	operation_id: string;
+	request_hash: string;
+	revision_id: string;
+	expected_revision_id: string | null;
+	revision_data: string;
+	status: string;
+	created_at: Generated<string>;
+	updated_at: Generated<string>;
+}
+
 export interface RevisionTable {
 	id: string;
 	collection: string; // e.g., 'posts'
@@ -621,6 +644,8 @@ export interface SectionTable {
 // Database schema
 // Note: ec_* content tables are dynamic and not part of this type
 export interface Database {
+	plugin_email_operations: PluginEmailOperationTable;
+	plugin_content_operations: PluginContentOperationTable;
 	revisions: RevisionTable;
 	_emdash_revision_prune_queue: RevisionPruneQueueTable;
 	taxonomies: TaxonomyTable;
