@@ -47,6 +47,7 @@ export interface SandboxEmailMessage {
 	subject: string;
 	text: string;
 	html?: string;
+	idempotencyKey?: string;
 }
 
 /**

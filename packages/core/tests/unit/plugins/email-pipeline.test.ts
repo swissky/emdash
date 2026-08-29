@@ -1310,3 +1310,119 @@ describe("EmailPipeline — cancellation audit", () => {
 		infoSpy.mockRestore();
 	});
 });
+
+describe("EmailPipeline — idempotent delivery", () => {
+	let db: Kysely<DbSchema>;
+	let sqliteDb: Database.Database;
+
+	beforeEach(async () => {
+		sqliteDb = new Database(":memory:");
+		db = new Kysely<DbSchema>({
+			dialect: new SqliteDialect({ database: sqliteDb }),
+		});
+		await runMigrations(db);
+	});
+
+	afterEach(async () => {
+		await db.destroy();
+		sqliteDb.close();
+	});
+
+	function createIdempotentPipeline(deliverHandler: EmailDeliverHandler): EmailPipeline {
+		const provider = createTestPlugin({
+			id: "provider",
+			capabilities: ["hooks.email-transport:register"],
+			hooks: {
+				"email:deliver": createTestHook("provider", deliverHandler, { exclusive: true }),
+			},
+		});
+		const hooks = new HookPipeline([provider], { db });
+		hooks.setExclusiveSelection("email:deliver", "provider");
+		return new EmailPipeline(hooks, db);
+	}
+
+	it("suppresses a replay with the same source, key, and message", async () => {
+		const deliver = vi.fn(async () => {});
+		const pipeline = createIdempotentPipeline(deliver);
+		const message = createTestMessage({ idempotencyKey: "welcome-1" });
+
+		await pipeline.send(message, "forms-plugin");
+		await pipeline.send(message, "forms-plugin");
+
+		expect(deliver).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects reuse of a source and key with a changed message", async () => {
+		const deliver = vi.fn(async () => {});
+		const pipeline = createIdempotentPipeline(deliver);
+
+		await pipeline.send(createTestMessage({ idempotencyKey: "welcome-2" }), "forms-plugin");
+		await expect(
+			pipeline.send(
+				createTestMessage({ idempotencyKey: "welcome-2", subject: "Changed" }),
+				"forms-plugin",
+			),
+		).rejects.toThrow("idempotencyKey was already used with a different email message");
+		expect(deliver).toHaveBeenCalledTimes(1);
+	});
+
+	it("allows only one provider attempt across concurrent sends", async () => {
+		const deliver = vi.fn(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		});
+		const pipeline = createIdempotentPipeline(deliver);
+		const message = createTestMessage({ idempotencyKey: "concurrent-1" });
+
+		await Promise.all([
+			pipeline.send(message, "forms-plugin"),
+			pipeline.send(message, "forms-plugin"),
+		]);
+
+		expect(deliver).toHaveBeenCalledTimes(1);
+	});
+
+	it("retains the claim after a provider failure", async () => {
+		const deliver = vi.fn(async () => {
+			throw new Error("provider unavailable");
+		});
+		const pipeline = createIdempotentPipeline(deliver);
+		const message = createTestMessage({ idempotencyKey: "provider-failure-1" });
+
+		await expect(pipeline.send(message, "forms-plugin")).rejects.toThrow("provider unavailable");
+		await pipeline.send(message, "forms-plugin");
+
+		expect(deliver).toHaveBeenCalledTimes(1);
+	});
+
+	it("retains the claim when marking a successful send fails", async () => {
+		const deliver = vi.fn(async () => {});
+		const pipeline = createIdempotentPipeline(deliver);
+		const updateSpy = vi.spyOn(db, "updateTable").mockImplementationOnce(() => {
+			throw new Error("database unavailable");
+		});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const message = createTestMessage({ idempotencyKey: "status-write-1" });
+
+		await pipeline.send(message, "forms-plugin");
+		updateSpy.mockRestore();
+		await pipeline.send(message, "forms-plugin");
+
+		expect(deliver).toHaveBeenCalledTimes(1);
+		expect(errorSpy).toHaveBeenCalledWith(
+			"[email] Failed to mark idempotent email as sent; claim retained:",
+			"database unavailable",
+		);
+		errorSpy.mockRestore();
+	});
+
+	it("keeps no-key sends unchanged", async () => {
+		const deliver = vi.fn(async () => {});
+		const pipeline = createIdempotentPipeline(deliver);
+		const message = createTestMessage();
+
+		await pipeline.send(message, "forms-plugin");
+		await pipeline.send(message, "forms-plugin");
+
+		expect(deliver).toHaveBeenCalledTimes(2);
+	});
+});

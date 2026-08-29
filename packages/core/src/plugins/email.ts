@@ -15,6 +15,9 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
+import { sql, type Kysely } from "kysely";
+
+import type { Database } from "../database/types.js";
 import type { HookPipeline } from "./hooks.js";
 import type { EmailDeliverEvent, EmailMessage } from "./types.js";
 
@@ -72,7 +75,10 @@ const emailSendALS = new AsyncLocalStorage<{ depth: number }>();
 export class EmailPipeline {
 	private pipeline: HookPipeline;
 
-	constructor(pipeline: HookPipeline) {
+	constructor(
+		pipeline: HookPipeline,
+		private readonly db?: Kysely<Database>,
+	) {
 		this.pipeline = pipeline;
 	}
 
@@ -140,6 +146,9 @@ export class EmailPipeline {
 		if (!message.text || typeof message.text !== "string") {
 			throw new Error("Invalid email message: 'text' is required and must be a string");
 		}
+		if (message.idempotencyKey !== undefined && typeof message.idempotencyKey !== "string") {
+			throw new Error("Invalid email message: 'idempotencyKey' must be a string when provided");
+		}
 
 		const isSystemEmail = source === SYSTEM_SOURCE;
 
@@ -167,6 +176,42 @@ export class EmailPipeline {
 			finalMessage = beforeResult.message;
 		}
 
+		// Claim before invoking the provider. The claim is intentionally durable even
+		// when delivery or the later status write fails: retries must not attempt twice.
+		if (finalMessage.idempotencyKey !== undefined) {
+			if (!this.db) {
+				throw new Error("Email idempotency requires a database-backed EmailPipeline");
+			}
+			const messageHash = await hashEmailMessage(finalMessage);
+			let insertError: unknown;
+			try {
+				await this.db
+					.insertInto("plugin_email_operations")
+					.values({
+						source,
+						idempotency_key: finalMessage.idempotencyKey,
+						message_hash: messageHash,
+						status: "claimed",
+					})
+					.execute();
+			} catch (error) {
+				insertError = error;
+			}
+			if (insertError) {
+				const existing = await this.db
+					.selectFrom("plugin_email_operations")
+					.select("message_hash")
+					.where("source", "=", source)
+					.where("idempotency_key", "=", finalMessage.idempotencyKey)
+					.executeTakeFirst();
+				if (!existing) throw insertError;
+				if (existing.message_hash !== messageHash) {
+					throw new Error("idempotencyKey was already used with a different email message");
+				}
+				return;
+			}
+		}
+
 		// Stage 2: email:deliver (exclusive hook)
 		const deliverEvent: EmailDeliverEvent = { message: finalMessage, source };
 		const deliverResult = await this.pipeline.invokeExclusiveHook(EMAIL_DELIVER_HOOK, deliverEvent);
@@ -177,6 +222,22 @@ export class EmailPipeline {
 
 		if (deliverResult.error) {
 			throw deliverResult.error;
+		}
+
+		if (finalMessage.idempotencyKey !== undefined && this.db) {
+			try {
+				await this.db
+					.updateTable("plugin_email_operations")
+					.set({ status: "sent", updated_at: sql`CURRENT_TIMESTAMP` })
+					.where("source", "=", source)
+					.where("idempotency_key", "=", finalMessage.idempotencyKey)
+					.execute();
+			} catch (error) {
+				console.error(
+					"[email] Failed to mark idempotent email as sent; claim retained:",
+					error instanceof Error ? error.message : error,
+				);
+			}
 		}
 
 		// Stage 3: email:afterSend (fire-and-forget)
@@ -206,4 +267,10 @@ export class EmailPipeline {
 	isAvailable(): boolean {
 		return this.pipeline.getExclusiveSelection(EMAIL_DELIVER_HOOK) !== undefined;
 	}
+}
+
+async function hashEmailMessage(message: EmailMessage): Promise<string> {
+	const payload = JSON.stringify([message.to, message.subject, message.text, message.html ?? null]);
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
+	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
