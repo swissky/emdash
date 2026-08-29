@@ -295,6 +295,16 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 			.run();
 	}
 
+	async kvSetIfAbsent(key: string, value: unknown): Promise<boolean> {
+		const { pluginId } = this.ctx.props;
+		const result = await this.env.DB.prepare(
+			"INSERT OR IGNORE INTO _plugin_storage (plugin_id, collection, id, data, updated_at) VALUES (?, '__kv', ?, ?, datetime('now'))",
+		)
+			.bind(pluginId, key, JSON.stringify(value))
+			.run();
+		return (result.meta?.changes ?? 0) > 0;
+	}
+
 	async kvDelete(key: string): Promise<boolean> {
 		const { pluginId } = this.ctx.props;
 		const result = await this.env.DB.prepare(

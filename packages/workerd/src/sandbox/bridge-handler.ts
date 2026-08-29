@@ -173,6 +173,8 @@ async function dispatch(
 			return kvGet(db, pluginId, requireString(body, "key"));
 		case "kv/set":
 			return kvSet(db, pluginId, requireString(body, "key"), body.value);
+		case "kv/set-if-absent":
+			return kvSetIfAbsent(db, pluginId, requireString(body, "key"), body.value);
 		case "kv/delete":
 			return kvDelete(db, pluginId, requireString(body, "key"));
 		case "kv/list":
@@ -380,7 +382,13 @@ async function dispatch(
 // value is typed via flow analysis rather than via a `as T` assertion. This
 // keeps the @typescript-eslint/no-unsafe-type-assertion rule clean.
 
-type EmailMessage = { to: string; subject: string; text: string; html?: string };
+type EmailMessage = {
+	to: string;
+	subject: string;
+	text: string;
+	html?: string;
+	idempotencyKey?: string;
+};
 type LogLevel = "debug" | "info" | "warn" | "error";
 type UpdateManyItem = { id: string; data: Record<string, unknown> };
 type StorageItem = { id: string; data: unknown };
@@ -427,6 +435,7 @@ function isEmailMessage(value: unknown): value is EmailMessage {
 	if (typeof value.subject !== "string") return false;
 	if (typeof value.text !== "string") return false;
 	if (value.html !== undefined && typeof value.html !== "string") return false;
+	if (value.idempotencyKey !== undefined && typeof value.idempotencyKey !== "string") return false;
 	return true;
 }
 
@@ -664,6 +673,28 @@ async function kvSet(
 			}),
 		)
 		.execute();
+}
+
+async function kvSetIfAbsent(
+	db: Kysely<Database>,
+	pluginId: string,
+	key: string,
+	value: unknown,
+): Promise<boolean> {
+	const now = new Date().toISOString();
+	const result = await db
+		.insertInto("_plugin_storage")
+		.values({
+			plugin_id: pluginId,
+			collection: "__kv",
+			id: key,
+			data: JSON.stringify(value),
+			created_at: now,
+			updated_at: now,
+		})
+		.onConflict((oc) => oc.columns(["plugin_id", "collection", "id"]).doNothing())
+		.executeTakeFirst();
+	return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
 }
 
 async function kvDelete(db: Kysely<Database>, pluginId: string, key: string): Promise<boolean> {

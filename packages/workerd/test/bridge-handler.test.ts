@@ -118,6 +118,16 @@ describe("Bridge Handler Conformance", () => {
 			expect(result.result).toBe("hello");
 		});
 
+		it("set-if-absent atomically preserves the first value", async () => {
+			const handler = makeHandler({});
+			const [first, second] = await Promise.all([
+				call(handler, "kv/set-if-absent", { key: "claim", value: "first" }),
+				call(handler, "kv/set-if-absent", { key: "claim", value: "second" }),
+			]);
+			expect([first.result, second.result].filter(Boolean)).toHaveLength(1);
+			expect((await call(handler, "kv/get", { key: "claim" })).result).toMatch(/^(first|second)$/);
+		});
+
 		it("get returns null for non-existent key", async () => {
 			const handler = makeHandler({});
 			const result = await call(handler, "kv/get", { key: "missing" });

@@ -93,6 +93,7 @@ function createContext(env) {
 	const kv = {
 		get: (key) => bridge.kvGet(key),
 		set: (key, value) => bridge.kvSet(key, value),
+		setIfAbsent: (key, value) => bridge.kvSetIfAbsent(key, value),
 		delete: (key) => bridge.kvDelete(key),
 		list: (prefix) => bridge.kvList(prefix)
 	};

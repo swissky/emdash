@@ -159,6 +159,7 @@ export interface PluginBridgeBinding {
 	// KV
 	kvGet(key: string): Promise<unknown>;
 	kvSet(key: string, value: unknown): Promise<void>;
+	kvSetIfAbsent(key: string, value: unknown): Promise<boolean>;
 	kvDelete(key: string): Promise<boolean>;
 	kvList(prefix?: string): Promise<Array<{ key: string; value: unknown }>>;
 	// Storage

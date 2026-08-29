@@ -129,6 +129,7 @@ function createContext() {
 	const kv = {
 		get: (key) => bridgeCall("kv/get", { key }),
 		set: (key, value) => bridgeCall("kv/set", { key, value }),
+		setIfAbsent: (key, value) => bridgeCall("kv/set-if-absent", { key, value }),
 		delete: (key) => bridgeCall("kv/delete", { key }),
 		list: (prefix) => bridgeCall("kv/list", { prefix }),
 	};
