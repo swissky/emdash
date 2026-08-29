@@ -159,7 +159,7 @@ describe("ai-search reindex jobs", () => {
 		const cursors: Array<string | undefined> = [];
 		const ctx = makeContext({
 			get: vi.fn(),
-			list: async (_collection, options) => {
+			list: async (_collection: string, options?: { cursor?: string }) => {
 				cursors.push(options?.cursor);
 				const start = Number(options?.cursor ?? 0);
 				const next = start + 50;
@@ -168,7 +168,7 @@ describe("ai-search reindex jobs", () => {
 					...(next < items.length ? { cursor: String(next), hasMore: true } : { hasMore: false }),
 				};
 			},
-		} as PluginContext["content"]);
+		} as unknown as PluginContext["content"]);
 		const plugin = createPlugin();
 		const handler = plugin.routes.reindex!.handler;
 
@@ -216,7 +216,7 @@ describe("ai-search reindex jobs", () => {
 		const ctx = makeContext({
 			get: vi.fn(),
 			list: async () => ({ items, hasMore: false }),
-		} as PluginContext["content"]);
+		} as unknown as PluginContext["content"]);
 		const plugin = createPlugin();
 		const handler = plugin.routes.reindex!.handler;
 
@@ -274,7 +274,7 @@ describe("ai-search reindex jobs", () => {
 				],
 				hasMore: false,
 			}),
-		} as PluginContext["content"]);
+		} as unknown as PluginContext["content"]);
 		await ctx.kv.set("item:posts/existing.md", "old-item-id");
 		const plugin = createPlugin();
 		const handler = plugin.routes.reindex!.handler;
@@ -310,7 +310,7 @@ describe("ai-search reindex jobs", () => {
 				],
 				hasMore: false,
 			}),
-		} as PluginContext["content"]);
+		} as unknown as PluginContext["content"]);
 		await ctx.kv.set("item:posts/broken.md", "old-item-id");
 		const plugin = createPlugin();
 		const handler = plugin.routes.reindex!.handler;
