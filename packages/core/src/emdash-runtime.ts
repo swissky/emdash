@@ -1618,7 +1618,7 @@ export class EmDashRuntime {
 		// The email pipeline orchestrates beforeSend → deliver → afterSend.
 		// The dev console provider was registered above and will be auto-selected
 		// by resolveExclusiveHooks if it's the sole email:deliver provider.
-		const emailPipeline = new EmailPipeline(pipeline);
+		const emailPipeline = new EmailPipeline(pipeline, db);
 
 		// Wire email send into sandbox runner (created earlier but without
 		// email pipeline since it didn't exist yet)

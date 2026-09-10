@@ -599,9 +599,13 @@ export interface EmailAccess {
  */
 export interface EmailMessage {
 	to: string;
+	cc?: string[];
+	replyTo?: string;
 	subject: string;
 	text: string;
 	html?: string;
+	/** Durable at-most-once attempt key, scoped to the sending source. */
+	idempotencyKey?: string;
 }
 
 /**

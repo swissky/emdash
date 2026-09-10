@@ -97,6 +97,30 @@ describe("createCloudflareEmailDeliver()", () => {
 		});
 	});
 
+	it("passes message cc and replyTo through to the binding", async () => {
+		const { env, send } = fakeEnv();
+		const deliver = createCloudflareEmailDeliver(
+			{ from: "cms@mails.example.com", replyTo: "fallback@example.com" },
+			async () => env,
+		);
+
+		await deliver(
+			{
+				message: { ...message, cc: ["trainer@example.com"], replyTo: "parent@example.com" },
+				source: "forms",
+			},
+			fakeCtx(),
+		);
+
+		expect(send).toHaveBeenCalledWith(
+			expect.objectContaining({
+				to: "user@example.com",
+				cc: ["trainer@example.com"],
+				replyTo: "parent@example.com",
+			}),
+		);
+	});
+
 	it("accepts a bare string from and omits optional fields", async () => {
 		const { env, send } = fakeEnv();
 		const deliver = createCloudflareEmailDeliver(

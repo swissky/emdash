@@ -1,5 +1,14 @@
 import type { Generated } from "kysely";
 
+export interface PluginEmailOperationTable {
+	source: string;
+	idempotency_key: string;
+	message_hash: string;
+	status: string;
+	created_at: Generated<string>;
+	updated_at: Generated<string>;
+}
+
 // Core database tables
 // Note: Content tables (ec_posts, ec_pages, etc.) are created dynamically
 // by the SchemaRegistry. They are not defined in this type file.
@@ -630,6 +639,7 @@ export interface SectionTable {
 // Database schema
 // Note: ec_* content tables are dynamic and not part of this type
 export interface Database {
+	plugin_email_operations: PluginEmailOperationTable;
 	revisions: RevisionTable;
 	_emdash_revision_prune_queue: RevisionPruneQueueTable;
 	taxonomies: TaxonomyTable;

@@ -217,7 +217,15 @@ export interface PluginBridgeBinding {
 		init?: RequestInit,
 	): Promise<{ status: number; headers: Record<string, string>; text: string }>;
 	// Email
-	emailSend(message: { to: string; subject: string; text: string; html?: string }): Promise<void>;
+	emailSend(message: {
+		to: string;
+		cc?: string[];
+		replyTo?: string;
+		subject: string;
+		text: string;
+		html?: string;
+		idempotencyKey?: string;
+	}): Promise<void>;
 	// Logging
 	log(level: "debug" | "info" | "warn" | "error", msg: string, data?: unknown): void;
 }

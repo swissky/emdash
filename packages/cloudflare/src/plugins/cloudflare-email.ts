@@ -130,14 +130,18 @@ export function createCloudflareEmailDeliver(
 		const result = await binding.send({
 			from,
 			to: message.to,
+			...(message.cc?.length ? { cc: message.cc } : {}),
 			subject: message.subject,
 			text: message.text,
 			...(message.html ? { html: message.html } : {}),
-			...(config.replyTo ? { replyTo: config.replyTo } : {}),
+			...((message.replyTo ?? config.replyTo)
+				? { replyTo: message.replyTo ?? config.replyTo }
+				: {}),
 		});
 
 		ctx.log.info("email delivered via Cloudflare Email Sending", {
 			to: message.to,
+			...(message.cc?.length ? { cc: message.cc } : {}),
 			subject: message.subject,
 			messageId: result?.messageId,
 		});
