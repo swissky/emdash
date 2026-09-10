@@ -11,7 +11,9 @@ import { Kysely, SqliteDialect, sql } from "kysely";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 import { runMigrations } from "../../../src/database/migrations/runner.js";
+import { ContentRepository } from "../../../src/database/repositories/content.js";
 import { OptionsRepository } from "../../../src/database/repositories/options.js";
+import { RevisionRepository } from "../../../src/database/repositories/revision.js";
 import { UserRepository } from "../../../src/database/repositories/user.js";
 import type { Database as DbSchema } from "../../../src/database/types.js";
 import { setI18nConfig } from "../../../src/i18n/config.js";
@@ -141,7 +143,7 @@ describe("Capability Enforcement Integration (v2)", () => {
 		// Insert test content with actual column values
 		await sql`
 			INSERT INTO ec_posts (id, slug, status, title, content, locale, translation_group)
-			VALUES 
+			VALUES
 				('post-1', 'hello-world', 'published', 'Hello World', 'Content 1', 'en', 'post-1'),
 				('post-2', 'second-post', 'draft', 'Second Post', 'Content 2', 'en', 'post-2')
 		`.execute(db);
@@ -657,6 +659,476 @@ describe("Capability Enforcement Integration (v2)", () => {
 		});
 	});
 
+	describe("createDraftRevision", () => {
+		beforeEach(async () => {
+			await sql`ALTER TABLE ec_posts ADD COLUMN live_revision_id TEXT`.execute(db);
+			await sql`ALTER TABLE ec_posts ADD COLUMN draft_revision_id TEXT`.execute(db);
+			await sql`
+						INSERT INTO _emdash_collections (id, slug, label, label_singular, supports)
+						VALUES ('collection-posts', 'posts', 'Posts', 'Post', '["drafts","revisions"]')
+					`.execute(db);
+			await sql`
+						INSERT INTO _emdash_fields (id, collection_id, slug, label, type, column_type)
+						VALUES
+							('field-title', 'collection-posts', 'title', 'Title', 'string', 'TEXT'),
+							('field-content', 'collection-posts', 'content', 'Content', 'text', 'TEXT')
+					`.execute(db);
+		});
+
+		it("creates a merged draft while leaving the published row unchanged", async () => {
+			const before = await sql<Record<string, unknown>>`
+						SELECT * FROM ec_posts WHERE id = 'post-1'
+					`.execute(db);
+			const access = createContentAccessWithWrite(db);
+
+			const draft = await access.createDraftRevision("posts", "post-1", {
+				title: "Draft title",
+			});
+
+			expect(draft.item.data).toEqual({ title: "Draft title", content: "Content 1" });
+			expect(draft.draftRevisionId).toMatch(/^[0-9A-Z]{26}$/);
+			expect(draft.item.draftRevisionId).toBe(draft.draftRevisionId);
+			const after = await sql<Record<string, unknown>>`
+						SELECT * FROM ec_posts WHERE id = 'post-1'
+					`.execute(db);
+			expect(after.rows[0]).toMatchObject({
+				title: before.rows[0]!.title,
+				content: before.rows[0]!.content,
+				status: before.rows[0]!.status,
+				published_at: before.rows[0]!.published_at,
+				updated_at: before.rows[0]!.updated_at,
+			});
+			const revision = await sql<{ data: string }>`
+						SELECT r.data FROM revisions r
+						JOIN ec_posts p ON p.draft_revision_id = r.id
+						WHERE p.id = 'post-1'
+					`.execute(db);
+			expect(JSON.parse(revision.rows[0]!.data)).toEqual(draft.item.data);
+		});
+
+		it("exposes the opaque token on get/list without leaking draft data", async () => {
+			const writeAccess = createContentAccessWithWrite(db);
+			const draft = await writeAccess.createDraftRevision("posts", "post-1", {
+				title: "Secret draft title",
+			});
+			const readAccess = createContentAccess(db);
+
+			const read = await readAccess.get("posts", "post-1");
+			const listed = (await readAccess.list("posts")).items.find((item) => item.id === "post-1");
+
+			expect(read?.draftRevisionId).toBe(draft.draftRevisionId);
+			expect(listed?.draftRevisionId).toBe(draft.draftRevisionId);
+			expect(read?.data.title).toBe("Hello World");
+			expect(listed?.data.title).toBe("Hello World");
+		});
+
+		it("acquires the current token from a read for stale-write protection", async () => {
+			const access = createContentAccessWithWrite(db);
+			await access.createDraftRevision("posts", "post-1", { title: "First draft" });
+			const observed = await access.get("posts", "post-1");
+
+			const next = await access.createDraftRevision(
+				"posts",
+				"post-1",
+				{ content: "Next draft body" },
+				{ expectedDraftRevisionId: observed!.draftRevisionId },
+			);
+
+			expect(next.item.draftRevisionId).toBe(next.draftRevisionId);
+		});
+
+		it("merges a second call against the current draft", async () => {
+			const access = createContentAccessWithWrite(db);
+			await access.createDraftRevision("posts", "post-1", { title: "Draft title" });
+
+			const draft = await access.createDraftRevision("posts", "post-1", {
+				content: "Draft body",
+			});
+
+			expect(draft.item.data).toEqual({ title: "Draft title", content: "Draft body" });
+		});
+
+		it("replays the same operation without creating another revision", async () => {
+			const access = createContentAccessWithWrite(db);
+			const first = await access.createDraftRevision(
+				"posts",
+				"post-1",
+				{ title: "Idempotent draft" },
+				{ operationId: "calendar-sync-42" },
+			);
+
+			// Simulates retrying after the pointer committed but the response was lost.
+			const replay = await access.createDraftRevision(
+				"posts",
+				"post-1",
+				{ title: "Idempotent draft" },
+				{ expectedDraftRevisionId: null, operationId: "calendar-sync-42" },
+			);
+			const count = await sql<{ count: number }>`
+						SELECT COUNT(*) AS count FROM revisions WHERE entry_id = 'post-1'
+					`.execute(db);
+
+			expect(first.alreadyApplied).toBe(false);
+			expect(replay.alreadyApplied).toBe(true);
+			expect(replay.draftRevisionId).toBe(first.draftRevisionId);
+			expect(replay.item.draftRevisionId).toBe(first.draftRevisionId);
+			expect(Number(count.rows[0]!.count)).toBe(1);
+		});
+
+		it("converges concurrent replays on one immutable revision", async () => {
+			const access = createContentAccessWithWrite(db);
+			const writes = await Promise.all([
+				access.createDraftRevision(
+					"posts",
+					"post-1",
+					{ title: "Convergent draft" },
+					{ operationId: "parallel-operation" },
+				),
+				access.createDraftRevision(
+					"posts",
+					"post-1",
+					{ title: "Convergent draft" },
+					{ operationId: "parallel-operation" },
+				),
+			]);
+			const revisions = await sql<{ count: number }>`
+						SELECT COUNT(*) AS count FROM revisions WHERE entry_id = 'post-1'
+					`.execute(db);
+
+			expect(new Set(writes.map((write) => write.operationRevisionId)).size).toBe(1);
+			expect(Number(revisions.rows[0]!.count)).toBe(1);
+		});
+
+		it("namespaces the same operation ID by plugin", async () => {
+			const pluginA = createContentAccessWithWrite(db, "plugin-a");
+			const pluginB = createContentAccessWithWrite(db, "plugin-b");
+			const first = await pluginA.createDraftRevision(
+				"posts",
+				"post-1",
+				{ title: "Plugin A" },
+				{ operationId: "shared-operation" },
+			);
+
+			const second = await pluginB.createDraftRevision(
+				"posts",
+				"post-1",
+				{ title: "Plugin B" },
+				{ expectedDraftRevisionId: first.draftRevisionId, operationId: "shared-operation" },
+			);
+
+			expect(second.alreadyApplied).toBe(false);
+			expect(second.draftRevisionId).not.toBe(first.draftRevisionId);
+		});
+
+		it("rejects operation key reuse with changed patch data", async () => {
+			const access = createContentAccessWithWrite(db);
+			await access.createDraftRevision(
+				"posts",
+				"post-1",
+				{ title: "Original patch" },
+				{ operationId: "immutable-operation" },
+			);
+
+			await expect(
+				access.createDraftRevision(
+					"posts",
+					"post-1",
+					{ title: "Changed patch" },
+					{ operationId: "immutable-operation" },
+				),
+			).rejects.toThrow(/already used with different content data/);
+		});
+
+		it("replays stored data after a newer draft and publish", async () => {
+			const access = createContentAccessWithWrite(db);
+			const original = await access.createDraftRevision(
+				"posts",
+				"post-1",
+				{ title: "Stored operation data" },
+				{ operationId: "durable-operation" },
+			);
+			await access.createDraftRevision("posts", "post-1", { title: "Newer draft" });
+			await new ContentRepository(db).publish("posts", "post-1");
+
+			const replay = await access.createDraftRevision(
+				"posts",
+				"post-1",
+				{ title: "Stored operation data" },
+				{ operationId: "durable-operation" },
+			);
+
+			expect(replay.alreadyApplied).toBe(true);
+			expect(replay.draftRevisionId).toBeNull();
+			expect(replay.operationRevisionId).toBe(original.operationRevisionId);
+			expect(replay.item.data.title).toBe("Stored operation data");
+		});
+
+		it("replays committed ledger data after its revision is pruned", async () => {
+			const access = createContentAccessWithWrite(db);
+			const original = await access.createDraftRevision(
+				"posts",
+				"post-1",
+				{ title: "Ledger snapshot" },
+				{ operationId: "pruned-revision" },
+			);
+			await new RevisionRepository(db).deleteById(original.draftRevisionId);
+
+			const replay = await access.createDraftRevision(
+				"posts",
+				"post-1",
+				{ title: "Ledger snapshot" },
+				{ operationId: "pruned-revision" },
+			);
+
+			expect(replay.alreadyApplied).toBe(true);
+			expect(replay.item.data.title).toBe("Ledger snapshot");
+			expect(replay.draftRevisionId).toBe(original.draftRevisionId);
+		});
+
+		it("recovers a pending operation after its pointer committed", async () => {
+			const access = createContentAccessWithWrite(db);
+			const requestData = { title: "Recovered stored data", content: "Content 1" };
+			const revisionId = "01KTESTRECOVERY00000000000";
+			await db
+				.insertInto("revisions")
+				.values({
+					id: revisionId,
+					collection: "posts",
+					entry_id: "post-1",
+					data: JSON.stringify({ ...requestData, _pluginOperationId: "crash-operation" }),
+					author_id: null,
+				})
+				.execute();
+			const requestHash = await crypto.subtle.digest(
+				"SHA-256",
+				new TextEncoder().encode(JSON.stringify({ title: "Recovered stored data" })),
+			);
+			const hash = Array.from(new Uint8Array(requestHash).slice(0, 8), (byte) =>
+				byte.toString(16).padStart(2, "0"),
+			).join("");
+			await db
+				.insertInto("plugin_content_operations")
+				.values({
+					plugin_id: "test-plugin",
+					collection: "posts",
+					entry_id: "post-1",
+					operation_id: "crash-operation",
+					request_hash: hash,
+					revision_id: revisionId,
+					expected_revision_id: null,
+					revision_data: JSON.stringify({ ...requestData, _pluginOperationId: "crash-operation" }),
+					status: "pending",
+				})
+				.execute();
+			await sql`UPDATE ec_posts SET draft_revision_id = ${revisionId} WHERE id = 'post-1'`.execute(
+				db,
+			);
+
+			const replay = await access.createDraftRevision(
+				"posts",
+				"post-1",
+				{ title: "Recovered stored data" },
+				{ operationId: "crash-operation" },
+			);
+
+			expect(replay.alreadyApplied).toBe(true);
+			expect(replay.item.data).toEqual(requestData);
+			expect(
+				(
+					await db
+						.selectFrom("plugin_content_operations")
+						.select("status")
+						.where("operation_id", "=", "crash-operation")
+						.executeTakeFirstOrThrow()
+				).status,
+			).toBe("committed");
+		});
+
+		it("recovers a pending operation from inherited ancestry after publish", async () => {
+			const access = createContentAccessWithWrite(db);
+			const applied = await access.createDraftRevision(
+				"posts",
+				"post-1",
+				{ title: "Ancestry operation" },
+				{ operationId: "ancestry-operation" },
+			);
+			await db
+				.updateTable("plugin_content_operations")
+				.set({ status: "pending" })
+				.where("operation_id", "=", "ancestry-operation")
+				.execute();
+			const newer = await access.createDraftRevision("posts", "post-1", { title: "Newer draft" });
+			await new ContentRepository(db).publish("posts", "post-1");
+
+			const replay = await access.createDraftRevision(
+				"posts",
+				"post-1",
+				{ title: "Ancestry operation" },
+				{ operationId: "ancestry-operation" },
+			);
+
+			expect(replay.alreadyApplied).toBe(true);
+			expect(replay.operationRevisionId).toBe(applied.operationRevisionId);
+			expect(replay.item.data.title).toBe("Ancestry operation");
+			expect(replay.draftRevisionId).toBeNull();
+			expect(newer.operationRevisionId).not.toBe(applied.operationRevisionId);
+		});
+
+		it("rejects a different operation with a stale token", async () => {
+			const access = createContentAccessWithWrite(db);
+			await access.createDraftRevision(
+				"posts",
+				"post-1",
+				{ title: "First operation" },
+				{ operationId: "operation-one" },
+			);
+
+			await expect(
+				access.createDraftRevision(
+					"posts",
+					"post-1",
+					{ title: "Second operation" },
+					{ expectedDraftRevisionId: null, operationId: "operation-two" },
+				),
+			).rejects.toThrow(/content changed or was deleted/);
+		});
+
+		it("does not publish operation metadata into content columns", async () => {
+			const access = createContentAccessWithWrite(db);
+			await access.createDraftRevision(
+				"posts",
+				"post-1",
+				{ title: "Published draft" },
+				{ operationId: "publish-operation" },
+			);
+
+			await new ContentRepository(db).publish("posts", "post-1");
+			const row = await sql<Record<string, unknown>>`
+						SELECT * FROM ec_posts WHERE id = 'post-1'
+					`.execute(db);
+
+			expect(row.rows[0]!.title).toBe("Published draft");
+			expect(row.rows[0]).not.toHaveProperty("_pluginOperationId");
+		});
+
+		it("rejects invalid operation IDs and reserved user fields", async () => {
+			const access = createContentAccessWithWrite(db);
+
+			await expect(
+				access.createDraftRevision("posts", "post-1", { title: "Draft" }, { operationId: "" }),
+			).rejects.toThrow(/operationId must be/);
+			await expect(
+				access.createDraftRevision("posts", "post-1", { _pluginOperationId: "forged" }),
+			).rejects.toThrow(/reserved field/);
+		});
+
+		it("rejects collections without revision support", async () => {
+			await db
+				.updateTable("_emdash_collections")
+				.set({ supports: "[]" })
+				.where("slug", "=", "posts")
+				.execute();
+			const access = createContentAccessWithWrite(db);
+
+			await expect(
+				access.createDraftRevision("posts", "post-1", { title: "Draft title" }),
+			).rejects.toThrow(/does not support revisions/);
+		});
+
+		it("rejects a stale explicit draft token", async () => {
+			const access = createContentAccessWithWrite(db);
+			const first = await access.createDraftRevision("posts", "post-1", {
+				title: "First draft",
+			});
+
+			await expect(
+				access.createDraftRevision(
+					"posts",
+					"post-1",
+					{ title: "Stale edit" },
+					{ expectedDraftRevisionId: null },
+				),
+			).rejects.toThrow(/expected token is stale/);
+			const row = await sql<{ draft_revision_id: string }>`
+						SELECT draft_revision_id FROM ec_posts WHERE id = 'post-1'
+					`.execute(db);
+			expect(row.rows[0]!.draft_revision_id).toBe(first.draftRevisionId);
+		});
+
+		it("allows only one concurrent writer with the same explicit token", async () => {
+			const access = createContentAccessWithWrite(db);
+			const first = await access.createDraftRevision("posts", "post-1", {
+				title: "Base draft",
+			});
+
+			const writes = await Promise.allSettled([
+				access.createDraftRevision(
+					"posts",
+					"post-1",
+					{ title: "Editor A" },
+					{ expectedDraftRevisionId: first.draftRevisionId },
+				),
+				access.createDraftRevision(
+					"posts",
+					"post-1",
+					{ title: "Editor B" },
+					{ expectedDraftRevisionId: first.draftRevisionId },
+				),
+			]);
+
+			expect(writes.filter((write) => write.status === "fulfilled")).toHaveLength(1);
+			expect(writes.filter((write) => write.status === "rejected")).toHaveLength(1);
+		});
+	});
+
+	describe("Storage Access", () => {
+		it("creates collection accessors from config", () => {
+			const storage = createStorageAccess(db, "test-plugin", {
+				events: { indexes: ["type"] },
+				cache: { indexes: ["key"] },
+			});
+
+			expect(storage.events).toBeDefined();
+			expect(storage.cache).toBeDefined();
+		});
+
+		it("provides full StorageCollection API", () => {
+			const storage = createStorageAccess(db, "test-plugin", {
+				items: { indexes: [] },
+			});
+
+			const collection = storage.items;
+			expect(typeof collection.get).toBe("function");
+			expect(typeof collection.put).toBe("function");
+			expect(typeof collection.delete).toBe("function");
+			expect(typeof collection.exists).toBe("function");
+			expect(typeof collection.getMany).toBe("function");
+			expect(typeof collection.putMany).toBe("function");
+			expect(typeof collection.deleteMany).toBe("function");
+			expect(typeof collection.query).toBe("function");
+			expect(typeof collection.count).toBe("function");
+		});
+
+		it("isolates storage between plugins", async () => {
+			const storage1 = createStorageAccess(db, "plugin-1", {
+				items: { indexes: [] },
+			});
+			const storage2 = createStorageAccess(db, "plugin-2", {
+				items: { indexes: [] },
+			});
+
+			await storage1.items.put("doc-1", { value: "from plugin 1" });
+
+			// Plugin 2 should not see plugin 1's data
+			const fromPlugin2 = await storage2.items.get("doc-1");
+			expect(fromPlugin2).toBeNull();
+
+			// Plugin 1 should still see its data
+			const fromPlugin1 = await storage1.items.get("doc-1");
+			expect(fromPlugin1).toEqual({ value: "from plugin 1" });
+		});
+	});
+
 	describe("HTTP Access", () => {
 		describe("createHttpAccess (with host restrictions)", () => {
 			it("allows requests to allowed hosts", async () => {
@@ -706,54 +1178,6 @@ describe("Capability Enforcement Integration (v2)", () => {
 					NOT_ALLOWED_FETCH_REGEX,
 				);
 			});
-		});
-	});
-
-	describe("Storage Access", () => {
-		it("creates collection accessors from config", () => {
-			const storage = createStorageAccess(db, "test-plugin", {
-				events: { indexes: ["type"] },
-				cache: { indexes: ["key"] },
-			});
-
-			expect(storage.events).toBeDefined();
-			expect(storage.cache).toBeDefined();
-		});
-
-		it("provides full StorageCollection API", () => {
-			const storage = createStorageAccess(db, "test-plugin", {
-				items: { indexes: [] },
-			});
-
-			const collection = storage.items;
-			expect(typeof collection.get).toBe("function");
-			expect(typeof collection.put).toBe("function");
-			expect(typeof collection.delete).toBe("function");
-			expect(typeof collection.exists).toBe("function");
-			expect(typeof collection.getMany).toBe("function");
-			expect(typeof collection.putMany).toBe("function");
-			expect(typeof collection.deleteMany).toBe("function");
-			expect(typeof collection.query).toBe("function");
-			expect(typeof collection.count).toBe("function");
-		});
-
-		it("isolates storage between plugins", async () => {
-			const storage1 = createStorageAccess(db, "plugin-1", {
-				items: { indexes: [] },
-			});
-			const storage2 = createStorageAccess(db, "plugin-2", {
-				items: { indexes: [] },
-			});
-
-			await storage1.items.put("doc-1", { value: "from plugin 1" });
-
-			// Plugin 2 should not see plugin 1's data
-			const fromPlugin2 = await storage2.items.get("doc-1");
-			expect(fromPlugin2).toBeNull();
-
-			// Plugin 1 should still see its data
-			const fromPlugin1 = await storage1.items.get("doc-1");
-			expect(fromPlugin1).toEqual({ value: "from plugin 1" });
 		});
 	});
 

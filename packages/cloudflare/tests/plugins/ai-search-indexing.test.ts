@@ -155,6 +155,7 @@ describe("ai-search reindex jobs", () => {
 			createdAt: "2026-01-01T00:00:00.000Z",
 			updatedAt: "2026-01-01T00:00:00.000Z",
 			publishedAt: "2026-01-01T00:00:00.000Z",
+			draftRevisionId: null,
 		}));
 		const cursors: Array<string | undefined> = [];
 		const ctx = makeContext({
@@ -212,6 +213,7 @@ describe("ai-search reindex jobs", () => {
 			createdAt: "2026-01-01T00:00:00.000Z",
 			updatedAt: "2026-01-01T00:00:00.000Z",
 			publishedAt: "2026-01-01T00:00:00.000Z",
+			draftRevisionId: null,
 		}));
 		const ctx = makeContext({
 			get: vi.fn(),
@@ -270,6 +272,7 @@ describe("ai-search reindex jobs", () => {
 						createdAt: "2026-01-01T00:00:00.000Z",
 						updatedAt: "2026-01-01T00:00:00.000Z",
 						publishedAt: "2026-01-01T00:00:00.000Z",
+						draftRevisionId: null,
 					},
 				],
 				hasMore: false,
@@ -306,6 +309,7 @@ describe("ai-search reindex jobs", () => {
 						createdAt: "2026-01-01T00:00:00.000Z",
 						updatedAt: "2026-01-01T00:00:00.000Z",
 						publishedAt: "2026-01-01T00:00:00.000Z",
+						draftRevisionId: null,
 					},
 				],
 				hasMore: false,

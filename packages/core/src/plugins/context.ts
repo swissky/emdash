@@ -5,18 +5,21 @@
  *
  */
 
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import { ulid } from "ulidx";
 
+import { validateContentData } from "../api/handlers/validation.js";
 import { ContentRepository } from "../database/repositories/content.js";
 import { MediaRepository } from "../database/repositories/media.js";
 import { OptionsRepository } from "../database/repositories/options.js";
 import { PluginStorageRepository } from "../database/repositories/plugin-storage.js";
+import { RevisionRepository } from "../database/repositories/revision.js";
 import { SeoRepository } from "../database/repositories/seo.js";
 import { TaxonomyRepository, type Taxonomy } from "../database/repositories/taxonomy.js";
 import { UserRepository } from "../database/repositories/user.js";
 import { withTransaction } from "../database/transaction.js";
 import type { Database } from "../database/types.js";
+import { validateIdentifier } from "../database/validate.js";
 import { resolveContentCreateLocale } from "../i18n/config.js";
 import {
 	resolveAndValidateExternalUrl,
@@ -25,8 +28,11 @@ import {
 } from "../import/ssrf.js";
 import { enrichImageMetadata } from "../media/enrich.js";
 import { markContentMediaUsageCollectionStaleSafely } from "../media/usage/content-refresh.js";
+import { invalidateCollectionCache } from "../object-cache/index.js";
+import { SchemaRegistry } from "../schema/registry.js";
 import { invalidateSiteSettingsCache } from "../settings/index.js";
 import type { Storage } from "../storage/types.js";
+import { hashString } from "../utils/hash.js";
 import { CronAccessImpl } from "./cron.js";
 import type { EmailPipeline } from "./email.js";
 import type {
@@ -48,6 +54,8 @@ import type {
 	UserInfo,
 	ContentItem,
 	ContentCreateOptions,
+	CreateDraftRevisionOptions,
+	CreateDraftRevisionResult,
 	ContentItemSeoInput,
 	ContentWriteInput,
 	MediaItem,
@@ -182,6 +190,58 @@ function splitSeoFromInput(input: ContentWriteInput): {
 	return { fields, seo };
 }
 
+const PLUGIN_OPERATIONS_KEY = "_pluginOperations";
+const MAX_PLUGIN_OPERATION_ID_LENGTH = 128;
+
+function publicRevisionData(data: Record<string, unknown>): Record<string, unknown> {
+	return Object.fromEntries(Object.entries(data).filter(([key]) => !key.startsWith("_")));
+}
+
+function pluginOperationMarkers(data: Record<string, unknown>): string[] {
+	const value = data[PLUGIN_OPERATIONS_KEY];
+	return Array.isArray(value)
+		? value.filter((marker): marker is string => typeof marker === "string")
+		: [];
+}
+
+async function buildDraftContentItem(
+	db: Kysely<Database>,
+	collection: string,
+	item: Awaited<ReturnType<ContentRepository["findById"]>> & {},
+	data: Record<string, unknown>,
+	draftRevisionId: string | null,
+): Promise<ContentItem> {
+	const result: ContentItem = {
+		id: item.id,
+		type: item.type,
+		slug: item.slug,
+		status: item.status,
+		data,
+		draftRevisionId,
+		createdAt: item.createdAt,
+		updatedAt: item.updatedAt,
+		locale: item.locale,
+		publishedAt: item.publishedAt,
+		scheduledAt: item.scheduledAt,
+	};
+	const seoRepo = new SeoRepository(db);
+	if (await seoRepo.isEnabled(collection)) result.seo = await seoRepo.get(collection, item.id);
+	return result;
+}
+
+function canonicalizePatch(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(canonicalizePatch);
+	if (value && typeof value === "object") {
+		return Object.fromEntries(
+			Object.entries(value as Record<string, unknown>)
+				.filter(([, item]) => item !== undefined)
+				.toSorted(([a], [b]) => a.localeCompare(b))
+				.map(([key, item]) => [key, canonicalizePatch(item)]),
+		);
+	}
+	return value;
+}
+
 /**
  * Reject writing SEO to a collection that does not have it enabled.
  * Matches the REST API behavior (VALIDATION_ERROR).
@@ -250,6 +310,7 @@ export function createContentAccess(db: Kysely<Database>): ContentAccess {
 				slug: item.slug,
 				status: item.status,
 				data: item.data,
+				draftRevisionId: item.draftRevisionId,
 				createdAt: item.createdAt,
 				updatedAt: item.updatedAt,
 				locale: item.locale,
@@ -291,6 +352,7 @@ export function createContentAccess(db: Kysely<Database>): ContentAccess {
 				slug: item.slug,
 				status: item.status,
 				data: item.data,
+				draftRevisionId: item.draftRevisionId,
 				createdAt: item.createdAt,
 				updatedAt: item.updatedAt,
 				locale: item.locale,
@@ -371,8 +433,12 @@ export function createTaxonomyAccess(db: Kysely<Database>): TaxonomyAccess {
  */
 export function createContentAccessWithWrite(
 	db: Kysely<Database>,
-	beforeContentWrite?: () => Promise<void>,
+	beforeContentWriteOrPluginId?: (() => Promise<void>) | string,
+	pluginId = "test-plugin",
 ): ContentAccessWithWrite {
+	const beforeContentWrite =
+		typeof beforeContentWriteOrPluginId === "function" ? beforeContentWriteOrPluginId : undefined;
+	if (typeof beforeContentWriteOrPluginId === "string") pluginId = beforeContentWriteOrPluginId;
 	const readAccess = createContentAccess(db);
 
 	return {
@@ -408,6 +474,7 @@ export function createContentAccessWithWrite(
 						slug: item.slug,
 						status: item.status,
 						data: item.data,
+						draftRevisionId: item.draftRevisionId,
 						createdAt: item.createdAt,
 						updatedAt: item.updatedAt,
 						locale: item.locale,
@@ -467,6 +534,7 @@ export function createContentAccessWithWrite(
 						slug: item.slug,
 						status: item.status,
 						data: item.data,
+						draftRevisionId: item.draftRevisionId,
 						createdAt: item.createdAt,
 						updatedAt: item.updatedAt,
 						locale: item.locale,
@@ -493,6 +561,321 @@ export function createContentAccessWithWrite(
 				}
 				throw error;
 			}
+		},
+
+		async createDraftRevision(
+			collection: string,
+			id: string,
+			data: ContentWriteInput,
+			options: CreateDraftRevisionOptions = {},
+		): Promise<CreateDraftRevisionResult> {
+			const { fields, seo } = splitSeoFromInput(data);
+			if (seo !== undefined) {
+				throw new Error("createDraftRevision does not support the reserved seo field");
+			}
+			for (const key of Object.keys(fields)) {
+				if (key.startsWith("_")) {
+					throw new Error(`createDraftRevision does not accept reserved field "${key}"`);
+				}
+			}
+			const operationId = options.operationId;
+			if (
+				operationId !== undefined &&
+				(operationId.length === 0 ||
+					operationId.length > MAX_PLUGIN_OPERATION_ID_LENGTH ||
+					operationId.trim() !== operationId)
+			) {
+				throw new Error(
+					`operationId must be a nonempty, trimmed string of at most ${MAX_PLUGIN_OPERATION_ID_LENGTH} characters`,
+				);
+			}
+
+			const hasExpectedToken = Object.hasOwn(options, "expectedDraftRevisionId");
+			const requestHash = await hashString(JSON.stringify(canonicalizePatch(fields)));
+			const maxAttempts = hasExpectedToken ? 1 : 2;
+			let result: CreateDraftRevisionResult | undefined;
+
+			for (let attempt = 0; attempt < maxAttempts; attempt++) {
+				try {
+					result = await withTransaction(db, async (trx) => {
+						const collectionInfo = await new SchemaRegistry(trx).getCollectionWithFields(
+							collection,
+						);
+						if (!collectionInfo) throw new Error(`Collection "${collection}" not found`);
+						if (!collectionInfo.supports.includes("revisions")) {
+							throw new Error(`Collection "${collection}" does not support revisions`);
+						}
+
+						const validation = await validateContentData(trx, collection, fields, {
+							partial: true,
+						});
+						if (!validation.ok) throw new Error(validation.error.message);
+
+						const contentRepo = new ContentRepository(trx);
+						const revisionRepo = new RevisionRepository(trx);
+						const item = await contentRepo.findById(collection, id);
+						if (!item) throw new Error("Content not found");
+
+						let currentDraftData: Record<string, unknown> | null = null;
+						let currentAncestryData: Record<string, unknown> | null = null;
+						let missingDraftRevisionId: string | null = null;
+						if (item.draftRevisionId) {
+							const draft = await revisionRepo.findById(item.draftRevisionId);
+							if (draft) {
+								currentDraftData = draft.data;
+								currentAncestryData = draft.data;
+							} else missingDraftRevisionId = item.draftRevisionId;
+						} else if (item.liveRevisionId) {
+							currentAncestryData =
+								(await revisionRepo.findById(item.liveRevisionId))?.data ?? null;
+						}
+
+						const expectedDraftRevisionId = hasExpectedToken
+							? (options.expectedDraftRevisionId ?? null)
+							: item.draftRevisionId;
+						let operation = operationId
+							? await trx
+									.selectFrom("plugin_content_operations")
+									.selectAll()
+									.where("plugin_id", "=", pluginId)
+									.where("collection", "=", collection)
+									.where("entry_id", "=", id)
+									.where("operation_id", "=", operationId)
+									.executeTakeFirst()
+							: undefined;
+						if (operation && operation.request_hash !== requestHash) {
+							throw new Error("operationId was already used with different content data");
+						}
+						const operationMarker = operationId
+							? await hashString(`${pluginId}\0${collection}\0${id}\0${operationId}`)
+							: undefined;
+						if (
+							operation &&
+							operationMarker &&
+							currentAncestryData &&
+							pluginOperationMarkers(currentAncestryData).includes(operationMarker)
+						) {
+							await trx
+								.updateTable("plugin_content_operations")
+								.set({ status: "committed" })
+								.where("plugin_id", "=", pluginId)
+								.where("collection", "=", collection)
+								.where("entry_id", "=", id)
+								.where("operation_id", "=", operationId!)
+								.execute();
+							const storedData = publicRevisionData(
+								JSON.parse(operation.revision_data) as Record<string, unknown>,
+							);
+							return {
+								item: await buildDraftContentItem(
+									trx,
+									collection,
+									item,
+									storedData,
+									item.draftRevisionId,
+								),
+								draftRevisionId: item.draftRevisionId,
+								operationRevisionId: operation.revision_id,
+								alreadyApplied: true,
+							};
+						}
+						if (operation?.status === "failed") {
+							throw new Error("Draft revision conflict: operation previously failed");
+						}
+						if (missingDraftRevisionId && operation?.status !== "committed") {
+							throw new Error(`Draft revision "${missingDraftRevisionId}" not found`);
+						}
+
+						const baseData = currentDraftData ?? item.data;
+						let revisionData = { ...baseData, ...fields };
+						let revisionId = ulid();
+						let operationExpectedRevisionId = expectedDraftRevisionId;
+						if (operation) {
+							revisionId = operation.revision_id;
+							revisionData = JSON.parse(operation.revision_data) as Record<string, unknown>;
+							operationExpectedRevisionId = operation.expected_revision_id;
+						} else if (operationId) {
+							revisionData[PLUGIN_OPERATIONS_KEY] = [
+								...new Set([...pluginOperationMarkers(revisionData), operationMarker!]),
+							];
+							revisionId = ulid();
+							try {
+								await trx
+									.insertInto("plugin_content_operations")
+									.values({
+										plugin_id: pluginId,
+										collection,
+										entry_id: id,
+										operation_id: operationId,
+										request_hash: requestHash,
+										revision_id: revisionId,
+										expected_revision_id: expectedDraftRevisionId,
+										revision_data: JSON.stringify(revisionData),
+										status: "pending",
+									})
+									.execute();
+							} catch {
+								// A parallel replay may have reserved the same immutable operation.
+							}
+							operation = await trx
+								.selectFrom("plugin_content_operations")
+								.selectAll()
+								.where("plugin_id", "=", pluginId)
+								.where("collection", "=", collection)
+								.where("entry_id", "=", id)
+								.where("operation_id", "=", operationId)
+								.executeTakeFirstOrThrow();
+							if (operation.request_hash !== requestHash) {
+								throw new Error("operationId was already used with different content data");
+							}
+							revisionId = operation.revision_id;
+							revisionData = JSON.parse(operation.revision_data) as Record<string, unknown>;
+							operationExpectedRevisionId = operation.expected_revision_id;
+						}
+
+						const effectiveData = publicRevisionData(revisionData);
+						if (operation?.status === "committed") {
+							return {
+								item: await buildDraftContentItem(
+									trx,
+									collection,
+									item,
+									effectiveData,
+									item.draftRevisionId,
+								),
+								draftRevisionId: item.draftRevisionId,
+								operationRevisionId: revisionId,
+								alreadyApplied: true,
+							};
+						}
+						if (
+							!operation &&
+							hasExpectedToken &&
+							item.draftRevisionId !== expectedDraftRevisionId
+						) {
+							throw new Error("Draft revision conflict: expected token is stale");
+						}
+
+						const contentItem = await buildDraftContentItem(
+							trx,
+							collection,
+							item,
+							effectiveData,
+							revisionId,
+						);
+						let revision = await revisionRepo.findById(revisionId);
+						if (!revision) {
+							try {
+								revision = await revisionRepo.create({
+									id: revisionId,
+									collection,
+									entryId: id,
+									data: revisionData,
+								});
+							} catch {
+								revision = await revisionRepo.findById(revisionId);
+							}
+						}
+						if (
+							!revision ||
+							revision.collection !== collection ||
+							revision.entryId !== id ||
+							JSON.stringify(revision.data) !== JSON.stringify(revisionData)
+						) {
+							throw new Error(`Reserved revision "${revisionId}" does not match operation data`);
+						}
+
+						if (operation && item.draftRevisionId === revisionId) {
+							await trx
+								.updateTable("plugin_content_operations")
+								.set({ status: "committed" })
+								.where("plugin_id", "=", pluginId)
+								.where("collection", "=", collection)
+								.where("entry_id", "=", id)
+								.where("operation_id", "=", operationId!)
+								.execute();
+							return {
+								item: await buildDraftContentItem(trx, collection, item, effectiveData, revisionId),
+								draftRevisionId: revisionId,
+								operationRevisionId: revisionId,
+								alreadyApplied: true,
+							};
+						}
+
+						validateIdentifier(collection, "collection");
+						const pointerUpdate = await sql`
+							UPDATE ${sql.ref(`ec_${collection}`)}
+							SET draft_revision_id = ${revisionId}
+							WHERE id = ${id}
+							AND deleted_at IS NULL
+							AND (
+								(${operationExpectedRevisionId} IS NULL AND draft_revision_id IS NULL)
+								OR draft_revision_id = ${operationExpectedRevisionId}
+							)
+						`.execute(trx);
+						if (Number(pointerUpdate.numAffectedRows ?? 0) !== 1) {
+							const current = await contentRepo.findById(collection, id);
+							if (current?.draftRevisionId !== revisionId) {
+								if (operationId) {
+									await trx
+										.updateTable("plugin_content_operations")
+										.set({ status: "failed" })
+										.where("plugin_id", "=", pluginId)
+										.where("collection", "=", collection)
+										.where("entry_id", "=", id)
+										.where("operation_id", "=", operationId)
+										.where("status", "=", "pending")
+										.execute();
+								}
+								throw new Error("Draft revision conflict: content changed or was deleted");
+							}
+						}
+
+						if (operationId) {
+							await trx
+								.updateTable("plugin_content_operations")
+								.set({ status: "committed" })
+								.where("plugin_id", "=", pluginId)
+								.where("collection", "=", collection)
+								.where("entry_id", "=", id)
+								.where("operation_id", "=", operationId)
+								.execute();
+							const replayHorizon = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+							await revisionRepo.prunePluginContentOperations(
+								pluginId,
+								collection,
+								id,
+								revisionId,
+								replayHorizon,
+								100,
+							);
+						}
+						return {
+							item: contentItem,
+							draftRevisionId: revisionId,
+							operationRevisionId: revisionId,
+							alreadyApplied: false,
+						};
+					});
+					break;
+				} catch (error) {
+					const isRetryableConflict =
+						!hasExpectedToken &&
+						attempt === 0 &&
+						error instanceof Error &&
+						error.message.startsWith("Draft revision conflict:");
+					if (!isRetryableConflict) throw error;
+				}
+			}
+
+			if (!result) throw new Error("Draft revision conflict after retry");
+			try {
+				invalidateCollectionCache(collection);
+			} catch (error) {
+				console.error(`[emdash] failed to invalidate ${collection} cache:`, error);
+			}
+			await markContentMediaUsageCollectionStaleSafely(db, collection, "CONTENT_USAGE_STALE");
+			return result;
 		},
 
 		async delete(collection: string, id: string): Promise<boolean> {
@@ -1112,7 +1495,7 @@ export class PluginContextFactory {
 		// names ("read:content", "write:content") never appear here.
 		let content: ContentAccess | ContentAccessWithWrite | undefined;
 		if (capabilities.has("content:write")) {
-			content = createContentAccessWithWrite(db, this.beforeContentWrite);
+			content = createContentAccessWithWrite(db, this.beforeContentWrite, plugin.id);
 		} else if (capabilities.has("content:read")) {
 			content = createContentAccess(db);
 		}

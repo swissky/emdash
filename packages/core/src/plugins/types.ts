@@ -219,6 +219,8 @@ export interface ContentItem {
 	status: string;
 	locale: string | null;
 	data: Record<string, unknown>;
+	/** Opaque token for optimistic draft concurrency; draft data is not included. */
+	draftRevisionId: string | null;
 	/**
 	 * SEO metadata, populated when the collection has SEO enabled
 	 * (`has_seo = 1`). `undefined` for non-SEO collections.
@@ -342,6 +344,22 @@ export interface TaxonomyAccess {
 	): Promise<TaxonomyTermInfo[]>;
 }
 
+/** Optimistic-concurrency options for draft revision writes. */
+export interface CreateDraftRevisionOptions {
+	/** The draft revision observed by the caller. `null` means no draft exists. */
+	expectedDraftRevisionId?: string | null;
+	/** Stable idempotency key for safely replaying a write after a lost response. */
+	operationId?: string;
+}
+
+/** Effective draft item and token to pass to the next draft write. */
+export interface CreateDraftRevisionResult {
+	item: ContentItem;
+	draftRevisionId: string | null;
+	operationRevisionId: string;
+	alreadyApplied: boolean;
+}
+
 /**
  * Full content access with write operations
  */
@@ -352,6 +370,12 @@ export interface ContentAccessWithWrite extends ContentAccess {
 		options?: ContentCreateOptions,
 	): Promise<ContentItem>;
 	update(collection: string, id: string, data: ContentWriteInput): Promise<ContentItem>;
+	createDraftRevision(
+		collection: string,
+		id: string,
+		data: ContentWriteInput,
+		options?: CreateDraftRevisionOptions,
+	): Promise<CreateDraftRevisionResult>;
 	delete(collection: string, id: string): Promise<boolean>;
 }
 
