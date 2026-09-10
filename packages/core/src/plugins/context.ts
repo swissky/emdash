@@ -81,6 +81,10 @@ export function createKVAccess(optionsRepo: OptionsRepository, pluginId: string)
 			await optionsRepo.set(`${prefix}${key}`, value);
 		},
 
+		async setIfAbsent(key: string, value: unknown): Promise<boolean> {
+			return optionsRepo.setIfAbsent(`${prefix}${key}`, value);
+		},
+
 		async delete(key: string): Promise<boolean> {
 			return optionsRepo.delete(`${prefix}${key}`);
 		},

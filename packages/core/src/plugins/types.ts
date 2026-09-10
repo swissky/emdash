@@ -177,6 +177,7 @@ export type PluginStorage<T extends PluginStorageConfig> = {
 export interface KVAccess {
 	get<T>(key: string): Promise<T | null>;
 	set(key: string, value: unknown): Promise<void>;
+	setIfAbsent(key: string, value: unknown): Promise<boolean>;
 	delete(key: string): Promise<boolean>;
 	list(prefix?: string): Promise<Array<{ key: string; value: unknown }>>;
 }

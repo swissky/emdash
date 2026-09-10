@@ -781,6 +781,15 @@ describe("Capability Enforcement Integration (v2)", () => {
 			expect(await kv2.get("shared-key")).toBe("value from 2");
 		});
 
+		it("setIfAbsent preserves the first value", async () => {
+			const optionsRepo = new OptionsRepository(db);
+			const kv = createKVAccess(optionsRepo, "test-plugin");
+
+			expect(await kv.setIfAbsent("once", "first")).toBe(true);
+			expect(await kv.setIfAbsent("once", "second")).toBe(false);
+			expect(await kv.get("once")).toBe("first");
+		});
+
 		it("supports listing keys with prefix", async () => {
 			const optionsRepo = new OptionsRepository(db);
 			const kv = createKVAccess(optionsRepo, "test-plugin");

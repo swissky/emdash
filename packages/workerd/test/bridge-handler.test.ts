@@ -118,6 +118,17 @@ describe("Bridge Handler Conformance", () => {
 			expect(result.result).toBe("hello");
 		});
 
+		it("set-if-absent preserves the first value", async () => {
+			const handler = makeHandler({});
+			expect(
+				(await call(handler, "kv/set-if-absent", { key: "once", value: "first" })).result,
+			).toBe(true);
+			expect(
+				(await call(handler, "kv/set-if-absent", { key: "once", value: "second" })).result,
+			).toBe(false);
+			expect((await call(handler, "kv/get", { key: "once" })).result).toBe("first");
+		});
+
 		it("get returns null for non-existent key", async () => {
 			const handler = makeHandler({});
 			const result = await call(handler, "kv/get", { key: "missing" });
