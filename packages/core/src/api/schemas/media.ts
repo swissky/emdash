@@ -180,6 +180,11 @@ export const mediaConfirmBody = z
 		size: z.number().int().nonnegative().optional(),
 		width: z.number().int().positive().optional(),
 		height: z.number().int().positive().optional(),
+		originalStorageKey: z.string().min(1).optional(),
+		originalMimeType: z.string().regex(CONTENT_TYPE_RE, "Invalid original content type").optional(),
+		originalSize: z.number().int().positive().optional(),
+		originalWidth: z.number().int().positive().optional(),
+		originalHeight: z.number().int().positive().optional(),
 	})
 	.meta({ id: "MediaConfirmBody" });
 
@@ -209,6 +214,11 @@ export const mediaItemSchema = z
 		alt: z.string().nullable(),
 		caption: z.string().nullable(),
 		storageKey: z.string(),
+		originalStorageKey: z.string().nullable(),
+		originalMimeType: z.string().nullable(),
+		originalSize: z.number().nullable(),
+		originalWidth: z.number().nullable(),
+		originalHeight: z.number().nullable(),
 		status: mediaStatusSchema,
 		contentHash: z.string().nullable(),
 		blurhash: z.string().nullable(),

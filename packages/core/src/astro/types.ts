@@ -400,6 +400,11 @@ export interface EmDashHandlers {
 		width?: number;
 		height?: number;
 		storageKey: string;
+		originalStorageKey?: string;
+		originalMimeType?: string;
+		originalSize?: number;
+		originalWidth?: number;
+		originalHeight?: number;
 		contentHash?: string;
 		blurhash?: string;
 		dominantColor?: string;

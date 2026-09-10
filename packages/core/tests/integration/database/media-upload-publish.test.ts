@@ -111,7 +111,10 @@ describeEachDialect("pending media upload publication", (dialect) => {
 			.where("id", "in", [expired.id, ready.id])
 			.execute();
 
-		expect(await repo.cleanupPendingUploads()).toEqual([expired.storageKey]);
+		expect(await repo.cleanupPendingUploads()).toEqual({
+			rowsDeleted: 1,
+			storageKeys: [expired.storageKey],
+		});
 		expect(await repo.findById(expired.id)).toBeNull();
 		expect(await repo.findById(ready.id)).toMatchObject({ status: "ready" });
 	});

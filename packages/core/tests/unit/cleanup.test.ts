@@ -243,14 +243,35 @@ describe("MediaRepository.cleanupPendingUploads", () => {
 		// Advance past 1 hour
 		vi.advanceTimersByTime(61 * 60 * 1000);
 
-		const deletedKeys = await mediaRepo.cleanupPendingUploads();
-		expect(deletedKeys).toHaveLength(10);
+		const deleted = await mediaRepo.cleanupPendingUploads();
+		expect(deleted.rowsDeleted).toBe(10);
+		expect(deleted.storageKeys).toHaveLength(10);
 		// Verify actual storage keys are returned
 		for (let i = 0; i < 10; i++) {
-			expect(deletedKeys).toContain(`uploads/pending-${i}.jpg`);
+			expect(deleted.storageKeys).toContain(`uploads/pending-${i}.jpg`);
 		}
 
 		vi.useRealTimers();
+	});
+
+	it("returns render and original keys for expired pending uploads", async () => {
+		vi.useFakeTimers();
+		try {
+			await mediaRepo.createPending({
+				filename: "pending.jpg",
+				mimeType: "image/webp",
+				storageKey: "uploads/pending.webp",
+				originalStorageKey: "uploads/pending.original.jpg",
+			});
+			vi.advanceTimersByTime(61 * 60 * 1000);
+
+			await expect(mediaRepo.cleanupPendingUploads()).resolves.toEqual({
+				rowsDeleted: 1,
+				storageKeys: ["uploads/pending.webp", "uploads/pending.original.jpg"],
+			});
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("does not delete recent pending uploads", async () => {
@@ -263,8 +284,8 @@ describe("MediaRepository.cleanupPendingUploads", () => {
 			});
 		}
 
-		const deletedKeys = await mediaRepo.cleanupPendingUploads();
-		expect(deletedKeys).toHaveLength(0);
+		const deleted = await mediaRepo.cleanupPendingUploads();
+		expect(deleted).toEqual({ rowsDeleted: 0, storageKeys: [] });
 	});
 
 	it("does not delete ready or failed items", async () => {
@@ -288,8 +309,8 @@ describe("MediaRepository.cleanupPendingUploads", () => {
 		// Advance past 1 hour
 		vi.advanceTimersByTime(61 * 60 * 1000);
 
-		const deletedKeys = await mediaRepo.cleanupPendingUploads();
-		expect(deletedKeys).toHaveLength(0); // failed + ready should not be deleted
+		const deleted = await mediaRepo.cleanupPendingUploads();
+		expect(deleted).toEqual({ rowsDeleted: 0, storageKeys: [] });
 
 		vi.useRealTimers();
 
@@ -310,9 +331,11 @@ describe("MediaRepository.cleanupPendingUploads", () => {
 		vi.advanceTimersByTime(10 * 60 * 1000);
 
 		// Cleanup with 5 min max age
-		const deletedKeys = await mediaRepo.cleanupPendingUploads(5 * 60 * 1000);
-		expect(deletedKeys).toHaveLength(1);
-		expect(deletedKeys[0]).toBe("uploads/short-lived.jpg");
+		const deleted = await mediaRepo.cleanupPendingUploads(5 * 60 * 1000);
+		expect(deleted).toEqual({
+			rowsDeleted: 1,
+			storageKeys: ["uploads/short-lived.jpg"],
+		});
 
 		vi.useRealTimers();
 	});

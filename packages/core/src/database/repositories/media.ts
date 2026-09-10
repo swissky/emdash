@@ -60,6 +60,11 @@ export interface MediaItem {
 	alt: string | null;
 	caption: string | null;
 	storageKey: string;
+	originalStorageKey: string | null;
+	originalMimeType: string | null;
+	originalSize: number | null;
+	originalWidth: number | null;
+	originalHeight: number | null;
 	status: MediaStatus;
 	contentHash: string | null;
 	blurhash: string | null;
@@ -78,6 +83,11 @@ export interface CreateMediaInput {
 	alt?: string;
 	caption?: string;
 	storageKey: string;
+	originalStorageKey?: string;
+	originalMimeType?: string;
+	originalSize?: number;
+	originalWidth?: number;
+	originalHeight?: number;
 	contentHash?: string;
 	blurhash?: string;
 	dominantColor?: string;
@@ -150,6 +160,11 @@ export class MediaRepository {
 			alt: input.alt ?? null,
 			caption: input.caption ?? null,
 			storage_key: input.storageKey,
+			original_storage_key: input.originalStorageKey ?? null,
+			original_mime_type: input.originalMimeType ?? null,
+			original_size: input.originalSize ?? null,
+			original_width: input.originalWidth ?? null,
+			original_height: input.originalHeight ?? null,
 			content_hash: input.contentHash ?? null,
 			blurhash: input.blurhash ?? null,
 			dominant_color: input.dominantColor ?? null,
@@ -172,6 +187,11 @@ export class MediaRepository {
 		mimeType: string;
 		size?: number;
 		storageKey: string;
+		originalStorageKey?: string;
+		originalMimeType?: string;
+		originalSize?: number;
+		originalWidth?: number;
+		originalHeight?: number;
 		contentHash?: string;
 		authorId?: string;
 		folderId?: string | null;
@@ -317,6 +337,11 @@ export class MediaRepository {
 			blurhash?: string;
 			dominantColor?: string;
 			contentHash?: string | null;
+			originalStorageKey?: string;
+			originalMimeType?: string;
+			originalSize?: number;
+			originalWidth?: number;
+			originalHeight?: number;
 		},
 		expectedStorageKey?: string,
 	): Promise<MediaItem | null> {
@@ -329,6 +354,13 @@ export class MediaRepository {
 		if (metadata?.blurhash !== undefined) updates.blurhash = metadata.blurhash;
 		if (metadata?.dominantColor !== undefined) updates.dominant_color = metadata.dominantColor;
 		if (metadata?.contentHash !== undefined) updates.content_hash = metadata.contentHash;
+		if (metadata?.originalStorageKey !== undefined)
+			updates.original_storage_key = metadata.originalStorageKey;
+		if (metadata?.originalMimeType !== undefined)
+			updates.original_mime_type = metadata.originalMimeType;
+		if (metadata?.originalSize !== undefined) updates.original_size = metadata.originalSize;
+		if (metadata?.originalWidth !== undefined) updates.original_width = metadata.originalWidth;
+		if (metadata?.originalHeight !== undefined) updates.original_height = metadata.originalHeight;
 
 		let query = this.db
 			.updateTable("media")
@@ -542,13 +574,17 @@ export class MediaRepository {
 	/**
 	 * Delete media item
 	 */
-	async deleteWithStorageKey(id: string): Promise<string | null> {
+	async deleteWithStorageKey(
+		id: string,
+	): Promise<{ storageKey: string; originalStorageKey: string | null } | null> {
 		const deleted = await this.db
 			.deleteFrom("media")
 			.where("id", "=", id)
-			.returning("storage_key")
+			.returning(["storage_key", "original_storage_key"])
 			.executeTakeFirst();
-		if (deleted) return deleted.storage_key;
+		if (deleted) {
+			return { storageKey: deleted.storage_key, originalStorageKey: deleted.original_storage_key };
+		}
 		return null;
 	}
 
@@ -610,17 +646,24 @@ export class MediaRepository {
 	 * Returns the storage keys of deleted rows so callers can remove the
 	 * corresponding files from object storage.
 	 */
-	async cleanupPendingUploads(maxAgeMs: number = 60 * 60 * 1000): Promise<string[]> {
+	async cleanupPendingUploads(
+		maxAgeMs: number = 60 * 60 * 1000,
+	): Promise<{ rowsDeleted: number; storageKeys: string[] }> {
 		const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
 
 		const rows = await this.db
 			.deleteFrom("media")
 			.where("status", "=", "pending")
 			.where("created_at", "<", cutoff)
-			.returning("storage_key")
+			.returning(["storage_key", "original_storage_key"])
 			.execute();
 
-		return rows.map((r) => r.storage_key);
+		return {
+			rowsDeleted: rows.length,
+			storageKeys: rows.flatMap((row) =>
+				row.original_storage_key ? [row.storage_key, row.original_storage_key] : [row.storage_key],
+			),
+		};
 	}
 
 	/**
@@ -640,6 +683,11 @@ export class MediaRepository {
 			alt: row.alt,
 			caption: row.caption,
 			storageKey: row.storage_key,
+			originalStorageKey: row.original_storage_key,
+			originalMimeType: row.original_mime_type,
+			originalSize: row.original_size,
+			originalWidth: row.original_width,
+			originalHeight: row.original_height,
 			contentHash: row.content_hash,
 			blurhash: row.blurhash,
 			dominantColor: row.dominant_color,

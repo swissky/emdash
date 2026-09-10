@@ -72,6 +72,11 @@ export interface MediaTable {
 	alt: string | null;
 	caption: string | null;
 	storage_key: string;
+	original_storage_key: string | null;
+	original_mime_type: string | null;
+	original_size: number | null;
+	original_width: number | null;
+	original_height: number | null;
 	status: string; // 'pending' | 'ready' | 'failed'
 	content_hash: string | null; // xxHash64 for deduplication
 	blurhash: string | null;
@@ -700,6 +705,11 @@ export type MediaRow = {
 	alt: string | null;
 	caption: string | null;
 	storage_key: string;
+	original_storage_key: string | null;
+	original_mime_type: string | null;
+	original_size: number | null;
+	original_width: number | null;
+	original_height: number | null;
 	status: string; // 'pending' | 'ready' | 'failed'
 	content_hash: string | null; // xxHash64 for deduplication
 	blurhash: string | null;

@@ -85,13 +85,13 @@ export async function runSystemCleanup(
 	//    Delete DB rows first, then remove corresponding files from storage.
 	try {
 		const mediaRepo = new MediaRepository(db);
-		const orphanedKeys = await mediaRepo.cleanupPendingUploads();
-		result.pendingUploads = orphanedKeys.length;
+		const { rowsDeleted, storageKeys } = await mediaRepo.cleanupPendingUploads();
+		result.pendingUploads = rowsDeleted;
 
 		// Delete orphaned files from object storage
-		if (storage && orphanedKeys.length > 0) {
+		if (storage && storageKeys.length > 0) {
 			let filesDeleted = 0;
-			for (const key of orphanedKeys) {
+			for (const key of storageKeys) {
 				try {
 					await storage.delete(key);
 					filesDeleted++;

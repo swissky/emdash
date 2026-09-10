@@ -16,6 +16,7 @@ import { isParseError, parseOptionalBody } from "#api/parse.js";
 import { mediaConfirmBody } from "#api/schemas.js";
 import { MediaRepository } from "#db/repositories/media.js";
 import { enrichImageMetadata } from "#media/enrich.js";
+import { normalizeMime } from "#media/mime.js";
 import type { MediaItem } from "#types";
 import { computeContentHash, MAX_CONTENT_HASH_BYTES } from "#utils/hash.js";
 
@@ -231,6 +232,11 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
 				blurhash,
 				dominantColor,
 				contentHash,
+				originalStorageKey: body.originalStorageKey,
+				originalMimeType: body.originalMimeType ? normalizeMime(body.originalMimeType) : undefined,
+				originalSize: body.originalSize,
+				originalWidth: body.originalWidth,
+				originalHeight: body.originalHeight,
 			},
 			existing.storageKey,
 		);

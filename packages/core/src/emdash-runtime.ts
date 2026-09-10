@@ -3323,6 +3323,11 @@ export class EmDashRuntime {
 		width?: number;
 		height?: number;
 		storageKey: string;
+		originalStorageKey?: string;
+		originalMimeType?: string;
+		originalSize?: number;
+		originalWidth?: number;
+		originalHeight?: number;
 		contentHash?: string;
 		blurhash?: string;
 		dominantColor?: string;
@@ -3356,6 +3361,11 @@ export class EmDashRuntime {
 				filename: item.filename,
 				mimeType: item.mimeType,
 				size: item.size,
+				originalStorageKey: item.originalStorageKey,
+				originalMimeType: item.originalMimeType,
+				originalSize: item.originalSize,
+				originalWidth: item.originalWidth,
+				originalHeight: item.originalHeight,
 				url: `/media/${item.id}/${item.filename}`,
 				createdAt: item.createdAt,
 			};

@@ -363,6 +363,11 @@ export interface MediaItem {
 	filename: string;
 	mimeType: string;
 	size: number | null;
+	originalStorageKey?: string | null;
+	originalMimeType?: string | null;
+	originalSize?: number | null;
+	originalWidth?: number | null;
+	originalHeight?: number | null;
 	url: string;
 	createdAt: string;
 }

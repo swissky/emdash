@@ -15,6 +15,7 @@ import { MediaRepository } from "../database/repositories/media.js";
 import type { Database } from "../database/types.js";
 import type { Storage } from "../index.js";
 import { invalidateSiteSettingsCache } from "../settings/index.js";
+import { deleteMediaStorageFiles } from "./delete-storage.js";
 import type {
 	CreateMediaProviderFn,
 	MediaProvider,
@@ -134,11 +135,7 @@ export const createMediaProvider: CreateMediaProviderFn<LocalMediaRuntimeConfig>
 
 			// Delete from storage if available
 			if (storage) {
-				try {
-					await storage.delete(item.storageKey);
-				} catch {
-					// Ignore storage deletion errors
-				}
+				await deleteMediaStorageFiles(storage, item);
 			}
 
 			await repoInstance.delete(id);

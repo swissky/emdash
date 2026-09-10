@@ -160,6 +160,17 @@ export const DELETE: APIRoute = async ({ params, locals }) => {
 			await removeUploadAttempt(emdash.storage, repo, result.data.storageKey, {
 				allowUntracked: true,
 			});
+			const originalStorageKey =
+				"originalStorageKey" in result.data && typeof result.data.originalStorageKey === "string"
+					? result.data.originalStorageKey
+					: null;
+			if (originalStorageKey) {
+				try {
+					await emdash.storage.delete(originalStorageKey);
+				} catch {
+					// Best-effort — the media row is already gone.
+				}
+			}
 		}
 
 		return apiSuccess({ deleted: true });

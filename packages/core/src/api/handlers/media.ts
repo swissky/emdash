@@ -145,6 +145,11 @@ export async function handleMediaCreate(
 		height?: number;
 		alt?: string;
 		storageKey: string;
+		originalStorageKey?: string;
+		originalMimeType?: string;
+		originalSize?: number;
+		originalWidth?: number;
+		originalHeight?: number;
 		contentHash?: string;
 		blurhash?: string;
 		dominantColor?: string;
@@ -275,12 +280,12 @@ function isForeignKeyViolation(error: unknown): boolean {
 export async function handleMediaDelete(
 	db: Kysely<Database>,
 	id: string,
-): Promise<ApiResult<{ deleted: true; storageKey: string }>> {
+): Promise<ApiResult<{ deleted: true; storageKey: string; originalStorageKey: string | null }>> {
 	try {
 		const repo = new MediaRepository(db);
-		const storageKey = await repo.deleteWithStorageKey(id);
+		const deleted = await repo.deleteWithStorageKey(id);
 
-		if (!storageKey) {
+		if (!deleted) {
 			return {
 				success: false,
 				error: {
@@ -292,7 +297,7 @@ export async function handleMediaDelete(
 
 		return {
 			success: true,
-			data: { deleted: true, storageKey },
+			data: { deleted: true, ...deleted },
 		};
 	} catch {
 		return {
