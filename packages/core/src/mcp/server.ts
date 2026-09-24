@@ -1696,9 +1696,23 @@ export function createMcpServer(
 			requireScope(extra, "content:write");
 			requireRole(extra, Role.CONTRIBUTOR);
 			const ec = getEmDash(extra);
-			return unwrapAndInvalidate(extra, await ec.handleContentDuplicate(args.collection, args.id), [
-				args.collection,
-			]);
+			const existing = await ec.handleContentGet(args.collection, args.id);
+			if (!existing.success) {
+				return unwrap(existing);
+			}
+			requireOwnership(
+				extra,
+				extractContentAuthorId(existing.data),
+				"content:edit_own",
+				"content:edit_any",
+			);
+			const resolvedId = extractContentId(existing.data) ?? args.id;
+			const { userId } = getExtra(extra);
+			return unwrapAndInvalidate(
+				extra,
+				await ec.handleContentDuplicate(args.collection, resolvedId, userId),
+				[args.collection],
+			);
 		},
 	);
 
