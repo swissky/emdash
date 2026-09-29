@@ -150,6 +150,26 @@ To replace the default, enter custom content in **Settings > SEO > robots.txt**.
 
 `robots.txt` and the sitemaps build absolute URLs from the **Site URL** in **Settings > General**, then the [`siteUrl`](/reference/configuration/#siteurl) option or the `EMDASH_SITE_URL` environment variable, then the request origin. Set one of these so the URLs match the public domain. Browsers and shared caches may keep `robots.txt` for up to a day and sitemaps for up to an hour.
 
+### AI crawlers
+
+Some search engines crawl for search and for AI model training under separate `robots.txt` tokens. Disallowing the training token keeps the site in search results. The following custom `robots.txt` keeps the default rules and opts out of training by Google (`Google-Extended`) and Apple (`Applebot-Extended`):
+
+```txt title="Settings > SEO > robots.txt"
+User-agent: *
+Allow: /
+Disallow: /_emdash/
+
+User-agent: Google-Extended
+Disallow: /
+
+User-agent: Applebot-Extended
+Disallow: /
+```
+
+Custom content replaces the default file, so include the `Disallow: /_emdash/` rule. EmDash adds the `Sitemap:` line.
+
+On a domain proxied by Cloudflare, the **Disallow AI Training** option for training crawlers in the zone's security settings publishes the same preference and blocks other training crawlers. Cloudflare adds its rules in front of the `robots.txt` that EmDash serves. See [robots.txt setting](https://developers.cloudflare.com/bots/additional-configurations/managed-robots-txt/) in the Cloudflare documentation.
+
 <Aside>
 To serve your own version, add a route file such as `src/pages/robots.txt.ts`, `src/pages/sitemap.xml.ts`, or `src/pages/sitemap-[collection].xml.ts`. EmDash serves your route for that path and keeps its routes for the others.
 </Aside>
