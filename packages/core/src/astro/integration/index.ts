@@ -39,6 +39,7 @@ import { VERSION } from "../../version.js";
 import { local } from "../storage/adapters.js";
 import { readAdminLocaleManifest, resolveAdminLocales } from "./admin-locales.js";
 import { resolveHiddenNavItems } from "./admin-nav.js";
+import { unknownOptionWarning, validateConfigShape } from "./config-schema.js";
 import { loadDevEnv } from "./dev-env.js";
 import { startDevSchedulerBridge } from "./dev-scheduler-bridge.js";
 import { createDebouncedTypegenRefresh, listenForDevTypegenRefresh } from "./dev-typegen.js";
@@ -458,6 +459,7 @@ function assertNoRemovedRegistryOption(config: EmDashConfig): void {
  */
 export function emdash(config: EmDashConfig = {}): AstroIntegration {
 	assertNoRemovedRegistryOption(config);
+	const unknownOptions = validateConfigShape(config);
 
 	const registry = resolveRegistryConfigForSandbox({
 		registry: config.registry,
@@ -635,6 +637,7 @@ export function emdash(config: EmDashConfig = {}): AstroIntegration {
 					allowLocalhost: command === "dev" || command === "sync",
 				});
 				printBanner(logger);
+				for (const key of unknownOptions) logger.warn(unknownOptionWarning(key));
 				if (command === "dev") {
 					// In Node `astro dev`, Vite loads `.env` into `import.meta.env`
 					// but not `process.env`. The plugin-secret encryption key
