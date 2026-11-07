@@ -15,6 +15,7 @@ import { GET as genericGET } from "astro/assets/endpoint/generic";
 import { getConfiguredImageService, imageConfig } from "astro:assets";
 
 import {
+	cacheMediaResponse,
 	getTransformFingerprint,
 	matchInternalMediaKey,
 	MUTABLE_MEDIA_CACHE_CONTROL,
@@ -128,6 +129,7 @@ export const GET: APIRoute = async (ctx) => {
 		const inputBuffer = new Uint8Array(await new Response(source.body).arrayBuffer());
 		const { data, format } = await service.transform(inputBuffer, transform, imageConfig);
 
+		cacheMediaResponse(ctx.cache, key);
 		return new Response(data, {
 			status: 200,
 			headers: {

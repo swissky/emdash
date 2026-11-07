@@ -16,6 +16,7 @@ import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
 import type { Storage } from "emdash";
 import {
+	cacheMediaResponse,
 	getTransformFingerprint,
 	matchInternalMediaKey,
 	MUTABLE_MEDIA_CACHE_CONTROL,
@@ -152,6 +153,7 @@ export const GET: APIRoute = async (ctx) => {
 		const response = result.response();
 		if (!response.body) return new Response(null, { status: 500 });
 
+		cacheMediaResponse(ctx.cache, key);
 		return new Response(response.body, {
 			status: 200,
 			headers: {

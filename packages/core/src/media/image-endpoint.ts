@@ -67,6 +67,25 @@ export const IMMUTABLE_IMAGE_CACHE = "public, max-age=31536000, immutable";
 /** Cache policy for media keys that Replace original may overwrite. */
 export const MUTABLE_MEDIA_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 
+/** How long a route cache may keep a media response; replace and delete purge it sooner. */
+export const MEDIA_ROUTE_CACHE_MAX_AGE = 86_400;
+
+/** Route cache tag for every response served from a storage key, including resized variants. */
+export function mediaCacheTag(key: string): string {
+	return `emdash:media:${key}`;
+}
+
+/**
+ * Store a successful media response in the route cache, tagged by its storage
+ * key. Browsers still revalidate on every view because they can't be purged.
+ */
+export function cacheMediaResponse(
+	cache: { enabled: boolean; set(options: { maxAge: number; tags: string[] }): void } | undefined,
+	key: string,
+): void {
+	if (cache?.enabled) cache.set({ maxAge: MEDIA_ROUTE_CACHE_MAX_AGE, tags: [mediaCacheTag(key)] });
+}
+
 /**
  * Format a Date as an HTTP-date (RFC 7231).
  */
